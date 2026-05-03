@@ -188,6 +188,7 @@ jobs:
             libnetcdf-dev \
             libtbb-dev \
             ninja-build \
+            patchelf \
             pkg-config \
             tar
 
@@ -222,6 +223,81 @@ jobs:
         run: |
           cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
           find "$INSTALL_DIR" -maxdepth 3 -type f -print
+
+      - name: Bundle Linux shared libraries
+        run: |
+          set -euo pipefail
+
+          executable="$INSTALL_DIR/bin/$TARGET_NAME"
+          lib_dir="$INSTALL_DIR/lib"
+          mkdir -p "$lib_dir"
+
+          should_bundle_library() {
+            local library_name
+            library_name="$(basename "$1")"
+
+            case "$library_name" in
+              libdate-tz.so.*|libhdf5*.so.*|libnetcdf.so.*|libnetcdf_c++4.so.*|libtbb*.so.*|libaec.so.*|libsz.so.*)
+                return 0
+                ;;
+            esac
+
+            return 1
+          }
+
+          list_dependencies() {
+            ldd "$1" | awk '
+              /=> \// { print $1 "|" $3 }
+              /^[[:space:]]*\// {
+                name = $1
+                sub(".*/", "", name)
+                print name "|" $1
+              }
+            '
+          }
+
+          pending=("$executable")
+          processed="|"
+
+          while [ "${#pending[@]}" -gt 0 ]; do
+            binary="${pending[0]}"
+            pending=("${pending[@]:1}")
+
+            case "$processed" in
+              *"|$binary|"*) continue ;;
+            esac
+            processed="$processed$binary|"
+
+            while IFS= read -r dependency_entry; do
+              [ -n "$dependency_entry" ] || continue
+
+              dependency_name="${dependency_entry%%|*}"
+              dependency="${dependency_entry#*|}"
+              should_bundle_library "$dependency" || continue
+
+              bundled_dependency="$lib_dir/$dependency_name"
+
+              if [ ! -e "$bundled_dependency" ]; then
+                cp -L "$dependency" "$bundled_dependency"
+                chmod u+w "$bundled_dependency"
+              fi
+
+              pending+=("$bundled_dependency")
+            done < <(list_dependencies "$binary")
+          done
+
+          patchelf --set-rpath '$ORIGIN/../lib' "$executable"
+
+          for library in "$lib_dir"/*.so*; do
+            [ -e "$library" ] || continue
+            patchelf --set-rpath '$ORIGIN' "$library" || true
+          done
+
+          echo "Bundled Linux shared libraries:"
+          find "$lib_dir" -maxdepth 1 -type f -printf '%f\n' | sort
+
+          echo "Resolved executable dependencies:"
+          ldd "$executable"
 
       - name: Create release archive
         id: package
