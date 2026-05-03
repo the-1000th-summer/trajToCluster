@@ -1,0 +1,9 @@
+{
+  "dependencies": [
+    "netcdf-c",
+    "netcdf-cxx4",
+    "tbb",
+    "cxxopts",
+    "indicators"
+  ]
+}
