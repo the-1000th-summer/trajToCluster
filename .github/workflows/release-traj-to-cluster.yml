@@ -1,0 +1,290 @@
+name: Release trajToCluster
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Existing tag to build and publish, for example v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+env:
+  TARGET_NAME: trajToCluster
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+
+jobs:
+  build-windows:
+    name: Build Windows x64
+    runs-on: windows-latest
+    env:
+      BUILD_DIR: ${{ github.workspace }}/build/release
+      INSTALL_DIR: ${{ github.workspace }}/dist/trajToCluster
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_CACHE_DIR: ${{ github.workspace }}/vcpkg-cache
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref }}
+          fetch-depth: 0
+
+      - name: Restore vcpkg binary cache
+        id: restore-vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.VCPKG_CACHE_DIR }}
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_DEFAULT_TRIPLET }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ env.VCPKG_DEFAULT_TRIPLET }}-
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
+          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+
+      - name: Ensure vcpkg binary cache directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force "$env:VCPKG_CACHE_DIR" | Out-Null
+
+      - name: Configure CMake
+        shell: pwsh
+        env:
+          VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-cache,readwrite
+        run: |
+          cmake `
+            -S "$env:GITHUB_WORKSPACE" `
+            -B "$env:BUILD_DIR" `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build "$env:BUILD_DIR" --config Release --target "$env:TARGET_NAME" --parallel
+
+      - name: Save vcpkg binary cache
+        if: steps.restore-vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ${{ env.VCPKG_CACHE_DIR }}
+          key: ${{ steps.restore-vcpkg-cache.outputs.cache-primary-key }}
+
+      - name: Install and collect runtime files
+        shell: pwsh
+        run: |
+          cmake --install "$env:BUILD_DIR" --config Release --prefix "$env:INSTALL_DIR"
+
+          $binDir = Join-Path "$env:INSTALL_DIR" "bin"
+          New-Item -ItemType Directory -Force $binDir | Out-Null
+
+          $tripletBinDir = Join-Path "$env:VCPKG_ROOT" "installed/$env:VCPKG_DEFAULT_TRIPLET/bin"
+          if (Test-Path $tripletBinDir) {
+            Copy-Item "$tripletBinDir/*.dll" $binDir -Force -ErrorAction SilentlyContinue
+          }
+
+          $buildRuntimeDir = Join-Path "$env:BUILD_DIR" "Release"
+          if (Test-Path $buildRuntimeDir) {
+            Copy-Item "$buildRuntimeDir/*.dll" $binDir -Force -ErrorAction SilentlyContinue
+          }
+
+          Get-ChildItem "$env:INSTALL_DIR" -Recurse
+
+      - name: Create release archive
+        id: package
+        shell: pwsh
+        run: |
+          $assetBaseName = "$env:TARGET_NAME-$env:RELEASE_TAG-windows-x64"
+          $assetPath = Join-Path "$env:RUNNER_TEMP" "$assetBaseName.zip"
+          $packageDir = Join-Path "$env:RUNNER_TEMP" $assetBaseName
+
+          if (Test-Path $packageDir) {
+            Remove-Item $packageDir -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Force $packageDir | Out-Null
+          Copy-Item "$env:INSTALL_DIR/*" $packageDir -Recurse -Force
+          Compress-Archive -Path $packageDir -DestinationPath $assetPath -Force
+          "asset_path=$assetPath" >> $env:GITHUB_OUTPUT
+
+      - name: Upload Windows archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: traj-to-cluster-windows-x64
+          path: ${{ steps.package.outputs.asset_path }}
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS
+    runs-on: macos-latest
+    env:
+      BUILD_DIR: ${{ github.workspace }}/build/release
+      INSTALL_DIR: ${{ github.workspace }}/dist/trajToCluster
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref }}
+          fetch-depth: 0
+
+      - name: Install build tools
+        run: brew install cmake ninja pkg-config autoconf automake libtool
+
+      - name: Bootstrap vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg "$VCPKG_ROOT"
+          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+
+      - name: Configure CMake
+        run: |
+          cmake \
+            -S "$GITHUB_WORKSPACE" \
+            -B "$BUILD_DIR" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build
+        run: cmake --build "$BUILD_DIR" --target "$TARGET_NAME" --parallel
+
+      - name: Install
+        run: |
+          cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
+          find "$INSTALL_DIR" -maxdepth 3 -type f -print
+
+      - name: Create release archive
+        id: package
+        run: |
+          asset_base_name="$TARGET_NAME-$RELEASE_TAG-macos"
+          asset_path="$RUNNER_TEMP/$asset_base_name.tar.gz"
+          package_dir="$RUNNER_TEMP/$asset_base_name"
+
+          rm -rf "$package_dir"
+          mkdir -p "$package_dir"
+          cp -a "$INSTALL_DIR"/. "$package_dir"/
+          tar -czf "$asset_path" -C "$RUNNER_TEMP" "$asset_base_name"
+          echo "asset_path=$asset_path" >> "$GITHUB_OUTPUT"
+
+      - name: Upload macOS archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: traj-to-cluster-macos
+          path: ${{ steps.package.outputs.asset_path }}
+          if-no-files-found: error
+
+  build-linux:
+    name: Build Linux x64
+    runs-on: ubuntu-latest
+    env:
+      BUILD_DIR: ${{ github.workspace }}/build/release
+      INSTALL_DIR: ${{ github.workspace }}/dist/trajToCluster
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref }}
+          fetch-depth: 0
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            autoconf \
+            automake \
+            bison \
+            cmake \
+            curl \
+            flex \
+            git \
+            libtool \
+            ninja-build \
+            pkg-config \
+            tar \
+            unzip \
+            zip
+
+      - name: Bootstrap vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg "$VCPKG_ROOT"
+          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+
+      - name: Configure CMake
+        run: |
+          cmake \
+            -S "$GITHUB_WORKSPACE" \
+            -B "$BUILD_DIR" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build
+        run: cmake --build "$BUILD_DIR" --target "$TARGET_NAME" --parallel
+
+      - name: Install
+        run: |
+          cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
+          find "$INSTALL_DIR" -maxdepth 3 -type f -print
+
+      - name: Create release archive
+        id: package
+        run: |
+          asset_base_name="$TARGET_NAME-$RELEASE_TAG-linux-x64"
+          asset_path="$RUNNER_TEMP/$asset_base_name.tar.gz"
+          package_dir="$RUNNER_TEMP/$asset_base_name"
+
+          rm -rf "$package_dir"
+          mkdir -p "$package_dir"
+          cp -a "$INSTALL_DIR"/. "$package_dir"/
+          tar -czf "$asset_path" -C "$RUNNER_TEMP" "$asset_base_name"
+          echo "asset_path=$asset_path" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Linux archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: traj-to-cluster-linux-x64
+          path: ${{ steps.package.outputs.asset_path }}
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - build-windows
+      - build-macos
+      - build-linux
+
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: traj-to-cluster-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: List release archives
+        run: find release-assets -maxdepth 1 -type f -print
+
+      - name: Upload archives to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: trajToCluster ${{ env.RELEASE_TAG }}
+          files: release-assets/*
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
