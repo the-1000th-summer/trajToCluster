@@ -180,5 +180,6 @@ T Util::getElementAt(const std::vector<T> &vec, int index) {
     }
     throw std::out_of_range("Index out of range");
 }
+template std::string Util::getElementAt<std::string>(const std::vector<std::string> &vec, int index);
 
 
