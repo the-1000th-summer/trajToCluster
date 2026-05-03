@@ -1,0 +1,193 @@
+name: Warm vcpkg Cache
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - vcpkg.json
+      - vcpkg-configuration.json
+      - .github/actions/prepare-windows-vcpkg/action.yml
+      - .github/workflows/release-traj-to-cluster.yml
+      - .github/workflows/warm-vcpkg-cache.yml
+
+permissions:
+  contents: read
+
+jobs:
+  detect-vcpkg-cache-inputs:
+    name: Detect vcpkg cache input changes
+    runs-on: ubuntu-latest
+    outputs:
+      should-warm: ${{ steps.detect.outputs.should-warm }}
+      reason: ${{ steps.detect.outputs.reason }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect relevant changes
+        id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          python3 <<'PY'
+          import os
+          import re
+          import subprocess
+
+          release_workflow = ".github/workflows/release-traj-to-cluster.yml"
+          direct_inputs = {
+              "vcpkg.json",
+              "vcpkg-configuration.json",
+              ".github/actions/prepare-windows-vcpkg/action.yml",
+              ".github/workflows/warm-vcpkg-cache.yml",
+          }
+
+          def git(*args, check=True):
+              result = subprocess.run(
+                  ["git", *args],
+                  check=False,
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+              )
+              if check and result.returncode != 0:
+                  raise RuntimeError(result.stderr)
+              return result.stdout
+
+          def write_output(should_warm, reason):
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write(f"should-warm={str(should_warm).lower()}\n")
+                  output.write(f"reason={reason}\n")
+              print(reason)
+
+          if os.environ["EVENT_NAME"] != "push":
+              write_output(True, "manual dispatch")
+              raise SystemExit(0)
+
+          base = os.environ["BASE_SHA"]
+          head = os.environ["HEAD_SHA"]
+
+          if re.fullmatch(r"0+", base or ""):
+              write_output(True, "new branch push")
+              raise SystemExit(0)
+
+          changed_files = set(git("diff", "--name-only", base, head).splitlines())
+
+          direct_matches = sorted(changed_files & direct_inputs)
+          if direct_matches:
+              write_output(True, f"changed direct vcpkg input: {direct_matches[0]}")
+              raise SystemExit(0)
+
+          if release_workflow not in changed_files:
+              write_output(False, "no vcpkg cache inputs changed")
+              raise SystemExit(0)
+
+          def file_at(revision):
+              return git("show", f"{revision}:{release_workflow}", check=False)
+
+          def relevant_ranges(text):
+              lines = text.splitlines()
+              ranges = []
+
+              job_start = None
+              for index, line in enumerate(lines, start=1):
+                  if re.match(r"^  build-windows:", line):
+                      job_start = index
+                      break
+
+              if job_start is None:
+                  return ranges
+
+              job_end = len(lines)
+              for index in range(job_start + 1, len(lines) + 1):
+                  if re.match(r"^  [A-Za-z0-9_-]+:", lines[index - 1]):
+                      job_end = index - 1
+                      break
+
+              steps_start = None
+              for index in range(job_start + 1, job_end + 1):
+                  if re.match(r"^    steps:", lines[index - 1]):
+                      steps_start = index
+                      break
+
+              ranges.append((job_start, (steps_start - 1) if steps_start else job_end))
+
+              for index in range(job_start + 1, job_end + 1):
+                  if re.match(r"^      - name: Prepare Windows vcpkg\s*$", lines[index - 1]):
+                      step_end = job_end
+                      for next_index in range(index + 1, job_end + 1):
+                          if re.match(r"^      - name:", lines[next_index - 1]):
+                              step_end = next_index - 1
+                              break
+                      ranges.append((index, step_end))
+                      break
+
+              return ranges
+
+          def changed_ranges():
+              diff = git("diff", "--unified=0", base, head, "--", release_workflow)
+              ranges = []
+              for line in diff.splitlines():
+                  match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+                  if not match:
+                      continue
+                  old_start = int(match.group(1))
+                  old_count = int(match.group(2) or "1")
+                  new_start = int(match.group(3))
+                  new_count = int(match.group(4) or "1")
+                  old_range = None if old_count == 0 else (old_start, old_start + old_count - 1)
+                  new_range = None if new_count == 0 else (new_start, new_start + new_count - 1)
+                  ranges.append((old_range, new_range))
+              return ranges
+
+          def overlaps(left, right):
+              if left is None or right is None:
+                  return False
+              return left[0] <= right[1] and right[0] <= left[1]
+
+          old_relevant = relevant_ranges(file_at(base))
+          new_relevant = relevant_ranges(file_at(head))
+
+          for old_range, new_range in changed_ranges():
+              if any(overlaps(old_range, relevant) for relevant in old_relevant):
+                  write_output(True, "release workflow changed Windows vcpkg setup")
+                  raise SystemExit(0)
+              if any(overlaps(new_range, relevant) for relevant in new_relevant):
+                  write_output(True, "release workflow changed Windows vcpkg setup")
+                  raise SystemExit(0)
+
+          write_output(False, "release workflow changes do not touch Windows vcpkg setup")
+          PY
+
+  warm-windows-vcpkg-cache:
+    name: Warm Windows vcpkg cache
+    needs: detect-vcpkg-cache-inputs
+    if: needs.detect-vcpkg-cache-inputs.outputs.should-warm == 'true'
+    runs-on: windows-latest
+    env:
+      BUILD_DIR: ${{ github.workspace }}/build/release
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare Windows vcpkg
+        uses: ./.github/actions/prepare-windows-vcpkg
+        with:
+          source-dir: .
+          build-dir: ${{ env.BUILD_DIR }}
+          vcpkg-root: ${{ env.VCPKG_ROOT }}
+          cache-dir: ${{ github.workspace }}/vcpkg-cache
+          triplet: ${{ env.VCPKG_DEFAULT_TRIPLET }}

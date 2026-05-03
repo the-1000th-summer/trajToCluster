@@ -1,0 +1,86 @@
+name: Prepare Windows vcpkg
+description: Restore, populate, and save the Windows vcpkg binary cache.
+
+inputs:
+  source-dir:
+    description: CMake source directory, also used as the vcpkg manifest root for the cache key.
+    required: true
+  build-dir:
+    description: CMake build directory.
+    required: false
+  vcpkg-root:
+    description: Directory where vcpkg will be cloned.
+    required: true
+  cache-dir:
+    description: Directory used as the vcpkg file binary cache.
+    required: true
+  triplet:
+    description: vcpkg triplet.
+    required: true
+  configure-cmake:
+    description: Whether to configure CMake to populate the binary cache.
+    required: false
+    default: "true"
+  save-cache:
+    description: Whether to save the binary cache inside this action.
+    required: false
+    default: "true"
+
+outputs:
+  cache-hit:
+    description: Whether the exact vcpkg binary cache key was restored.
+    value: ${{ steps.restore-vcpkg-cache.outputs.cache-hit }}
+  cache-primary-key:
+    description: Primary key used for the restored vcpkg binary cache.
+    value: ${{ steps.restore-vcpkg-cache.outputs.cache-primary-key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Restore vcpkg binary cache
+      id: restore-vcpkg-cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ inputs.cache-dir }}
+        key: vcpkg-${{ runner.os }}-${{ inputs.triplet }}-${{ hashFiles(format('{0}/vcpkg.json', inputs.source-dir), format('{0}/vcpkg-configuration.json', inputs.source-dir)) }}
+        restore-keys: |
+          vcpkg-${{ runner.os }}-${{ inputs.triplet }}-
+
+    - name: Bootstrap vcpkg
+      shell: pwsh
+      env:
+        VCPKG_ROOT: ${{ inputs.vcpkg-root }}
+      run: |
+        git clone https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
+        & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+
+    - name: Ensure vcpkg binary cache directory
+      shell: pwsh
+      env:
+        CACHE_DIR: ${{ inputs.cache-dir }}
+      run: New-Item -ItemType Directory -Force "$env:CACHE_DIR" | Out-Null
+
+    - name: Configure CMake
+      if: ${{ inputs.configure-cmake == 'true' }}
+      shell: pwsh
+      env:
+        SOURCE_DIR: ${{ inputs.source-dir }}
+        BUILD_DIR: ${{ inputs.build-dir }}
+        VCPKG_ROOT: ${{ inputs.vcpkg-root }}
+        CACHE_DIR: ${{ inputs.cache-dir }}
+        VCPKG_BINARY_SOURCES: clear;files,${{ inputs.cache-dir }},readwrite
+      run: |
+        cmake `
+          -S "$env:SOURCE_DIR" `
+          -B "$env:BUILD_DIR" `
+          -G "Visual Studio 17 2022" `
+          -A x64 `
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+    - name: Save vcpkg binary cache
+      if: ${{ inputs.save-cache == 'true' && steps.restore-vcpkg-cache.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v4
+      continue-on-error: true
+      with:
+        path: ${{ inputs.cache-dir }}
+        key: ${{ steps.restore-vcpkg-cache.outputs.cache-primary-key }}
