@@ -130,7 +130,6 @@ jobs:
     env:
       BUILD_DIR: ${{ github.workspace }}/build/release
       INSTALL_DIR: ${{ github.workspace }}/dist/trajToCluster
-      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
 
     steps:
       - name: Checkout
@@ -139,22 +138,28 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref }}
           fetch-depth: 0
 
-      - name: Install build tools
-        run: brew install cmake ninja pkg-config autoconf automake libtool
-
-      - name: Bootstrap vcpkg
+      - name: Install dependencies with Homebrew
         run: |
-          git clone https://github.com/microsoft/vcpkg "$VCPKG_ROOT"
-          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+          brew install \
+            cmake \
+            cxxopts \
+            indicators \
+            netcdf \
+            netcdf-cxx \
+            ninja \
+            pkg-config \
+            tbb
 
       - name: Configure CMake
         run: |
+          BREW_PREFIX="$(brew --prefix)"
+
           cmake \
             -S "$GITHUB_WORKSPACE" \
             -B "$BUILD_DIR" \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+            -DCMAKE_PREFIX_PATH="$BREW_PREFIX"
 
       - name: Build
         run: cmake --build "$BUILD_DIR" --target "$TARGET_NAME" --parallel
@@ -190,7 +195,6 @@ jobs:
     env:
       BUILD_DIR: ${{ github.workspace }}/build/release
       INSTALL_DIR: ${{ github.workspace }}/dist/trajToCluster
-      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
 
     steps:
       - name: Checkout
@@ -204,24 +208,31 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
-            autoconf \
-            automake \
-            bison \
+            ca-certificates \
             cmake \
-            curl \
-            flex \
             git \
-            libtool \
+            libcxxopts-dev \
+            libnetcdf-c++4-dev \
+            libnetcdf-dev \
+            libtbb-dev \
             ninja-build \
             pkg-config \
-            tar \
-            unzip \
-            zip
+            tar
 
-      - name: Bootstrap vcpkg
+      - name: Install indicators
         run: |
-          git clone https://github.com/microsoft/vcpkg "$VCPKG_ROOT"
-          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+          git clone --depth 1 --branch v2.3 https://github.com/p-ranav/indicators "$RUNNER_TEMP/indicators-src"
+          cmake \
+            -S "$RUNNER_TEMP/indicators-src" \
+            -B "$RUNNER_TEMP/indicators-build" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DINDICATORS_BUILD_SAMPLES=OFF \
+            -DINDICATORS_BUILD_TESTS=OFF \
+            -DINDICATORS_DEMO=OFF \
+            -DINDICATORS_SAMPLES=OFF
+          cmake --install "$RUNNER_TEMP/indicators-build" --prefix "$RUNNER_TEMP/deps/indicators"
+          echo "INDICATORS_PREFIX=$RUNNER_TEMP/deps/indicators" >> "$GITHUB_ENV"
 
       - name: Configure CMake
         run: |
@@ -230,7 +241,7 @@ jobs:
             -B "$BUILD_DIR" \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+            -DCMAKE_PREFIX_PATH="$INDICATORS_PREFIX"
 
       - name: Build
         run: cmake --build "$BUILD_DIR" --target "$TARGET_NAME" --parallel

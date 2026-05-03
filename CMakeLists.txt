@@ -2,10 +2,58 @@ cmake_minimum_required(VERSION 3.20)
 
 project(trajToCluster LANGUAGES CXX)
 
-find_package(netCDFCxx CONFIG REQUIRED)
+find_package(netCDF REQUIRED)
+find_package(netCDFCxx CONFIG QUIET)
 find_package(TBB CONFIG REQUIRED)
 find_package(cxxopts CONFIG REQUIRED)
 find_package(indicators CONFIG REQUIRED)
+
+if(NOT TARGET netCDF::netcdf-cxx4)
+    find_program(NetCDFCxx_CONFIG_EXECUTABLE NAMES ncxx4-config)
+
+    if(NetCDFCxx_CONFIG_EXECUTABLE)
+        execute_process(
+            COMMAND "${NetCDFCxx_CONFIG_EXECUTABLE}" --includedir
+            OUTPUT_VARIABLE NetCDFCxx_CONFIG_INCLUDE_DIR
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        execute_process(
+            COMMAND "${NetCDFCxx_CONFIG_EXECUTABLE}" --libdir
+            OUTPUT_VARIABLE NetCDFCxx_CONFIG_LIBRARY_DIR
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+    endif()
+
+    find_path(NetCDFCxx_INCLUDE_DIR
+        NAMES netcdf
+        HINTS "${NetCDFCxx_CONFIG_INCLUDE_DIR}"
+    )
+    find_library(NetCDFCxx_LIBRARY
+        NAMES netcdf-cxx4 netcdf_c++4
+        HINTS "${NetCDFCxx_CONFIG_LIBRARY_DIR}"
+    )
+
+    include(FindPackageHandleStandardArgs)
+    find_package_handle_standard_args(netCDFCxx
+        REQUIRED_VARS NetCDFCxx_LIBRARY NetCDFCxx_INCLUDE_DIR
+    )
+
+    add_library(netCDF::netcdf-cxx4 UNKNOWN IMPORTED)
+    set_target_properties(netCDF::netcdf-cxx4 PROPERTIES
+        IMPORTED_LOCATION "${NetCDFCxx_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${NetCDFCxx_INCLUDE_DIR}"
+    )
+
+    if(TARGET netCDF::netcdf)
+        set_target_properties(netCDF::netcdf-cxx4 PROPERTIES
+            INTERFACE_LINK_LIBRARIES netCDF::netcdf
+        )
+    elseif(netCDF_LIBRARIES)
+        set_target_properties(netCDF::netcdf-cxx4 PROPERTIES
+            INTERFACE_LINK_LIBRARIES "${netCDF_LIBRARIES}"
+        )
+    endif()
+endif()
 
 add_executable(trajToCluster
     main.cpp
