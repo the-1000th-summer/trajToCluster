@@ -7,6 +7,17 @@ find_package(netCDFCxx CONFIG QUIET)
 find_package(TBB CONFIG REQUIRED)
 find_package(cxxopts CONFIG REQUIRED)
 find_package(indicators CONFIG REQUIRED)
+find_package(date CONFIG REQUIRED NAMES date howardhinnant-date)
+
+if(TARGET date::date)
+    set(DATE_LIBRARY_TARGET date::date)
+elseif(TARGET howardhinnant-date::date)
+    set(DATE_LIBRARY_TARGET howardhinnant-date::date)
+elseif(TARGET howardhinnant-date::howardhinnant-date)
+    set(DATE_LIBRARY_TARGET howardhinnant-date::howardhinnant-date)
+else()
+    message(FATAL_ERROR "Found Howard Hinnant date package, but no supported CMake target was exported.")
+endif()
 
 if(NOT TARGET netCDF::netcdf-cxx4)
     find_program(NetCDFCxx_CONFIG_EXECUTABLE NAMES ncxx4-config)
@@ -85,6 +96,7 @@ target_link_libraries(trajToCluster
         TBB::tbb
         cxxopts::cxxopts
         indicators::indicators
+        ${DATE_LIBRARY_TARGET}
 )
 
 if (WIN32)

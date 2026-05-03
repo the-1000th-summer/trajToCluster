@@ -1,11 +1,13 @@
 
 #include <chrono>
+#include <date/date.h>
 #include "util.h"
 #include "CustomException.h"
 #include <filesystem>
 #include <iostream>
 #include <regex>
 #include <fstream>
+#include <sstream>
 
 [[noreturn]] void Util::printErrMsgAndExit(const std::string &msg, int lineNum, const std::string &filePath) {
     std::cout << msg << std::endl;
@@ -92,8 +94,8 @@ void Util::removeEmptyLineAtTheEnd(std::vector<std::string> &lines) {
 
 std::chrono::system_clock::time_point Util::strptime(const std::string &dateTimeStr, const char *dateTimeFormat) {
     std::istringstream in{ dateTimeStr };
-    std::chrono::sys_seconds tp;
-    in >> std::chrono::parse(dateTimeFormat, tp);
+    date::sys_seconds tp;
+    in >> date::parse(dateTimeFormat, tp);
     if (in.fail()) {
         const std::string exceptionMsg = "fail to parse datetime string: " + dateTimeStr + " from format: " + dateTimeFormat;
         throw DateTimeException(exceptionMsg);

@@ -4,6 +4,7 @@
     "netcdf-cxx4",
     "tbb",
     "cxxopts",
-    "indicators"
+    "indicators",
+    "date"
   ]
 }

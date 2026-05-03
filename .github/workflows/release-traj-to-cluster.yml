@@ -113,6 +113,7 @@ jobs:
           brew install \
             cmake \
             cxxopts \
+            howard-hinnant-date \
             indicators \
             netcdf \
             netcdf-cxx \
@@ -182,6 +183,7 @@ jobs:
             cmake \
             git \
             libcxxopts-dev \
+            libhowardhinnant-date-dev \
             libnetcdf-c++4-dev \
             libnetcdf-dev \
             libtbb-dev \
