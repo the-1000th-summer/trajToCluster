@@ -1,5 +1,7 @@
 # trajToCluster
 
+👉 [中文版](README_zh.md)
+
 trajToCluster: A clustering analysis tool for [HYSPLIT](https://www.ready.noaa.gov/HYSPLIT.php). The software enhances the clustering analysis functionality of HYSPLIT, reducing memory usage and supporting multi-core parallel computation.
 
 |                                     ![speed comparison](speedComparison.svg)                                     | 
